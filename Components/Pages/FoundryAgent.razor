@@ -13,11 +13,48 @@
 {
     <div class="alert alert-warning" role="alert">
         The Foundry agent is not configured. Please set the required environment variables 
-        (<code>AzureAIFoundryProjectEndpoint</code> and <code>AzureAIFoundryAgentId</code>) 
+        (<code>AzureAIFoundryProjectEndpoint</code> and <code>ModelDeployment</code>) 
         in your appsettings or environment to enable this feature.
+        <br /><br />
+        You can now create agents dynamically by name using the enhanced agent service.
     </div>
 }
 else
+{
+    <div class="mb-3">
+        <div class="card">
+            <div class="card-header">
+                <h5>Agent Management</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-8">
+                        <InputText @bind-Value="newAgentName" class="form-control" placeholder="Enter agent name" />
+                    </div>
+                    <div class="col-md-4">
+                        <button type="button" @onclick="CreateOrGetAgentAsync" class="btn btn-success" disabled="@isCreatingAgent">
+                            @if (isCreatingAgent)
+                            {
+                                <span class="spinner-border spinner-border-sm" role="status"></span>
+                                <text>Creating...</text>
+                            }
+                            else
+                            {
+                                <text>Get/Create Agent</text>
+                            }
+                        </button>
+                    </div>
+                </div>
+                @if (!string.IsNullOrEmpty(agentStatus))
+                {
+                    <div class="alert alert-info mt-2" role="alert">
+                        @agentStatus
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+}
 {
     <div class="container-fluid d-flex flex-column align-items-center justify-content-center" style="height: 100vh;">
         <div class="card shadow w-100" style="max-width: 600px; height: 80vh; min-height: 400px; display: flex; flex-direction: column;">
@@ -73,14 +110,57 @@ else
 
 @code {
     private bool isLoading;
+    private bool isCreatingAgent;
     private string? chatMessage { get; set; }
     private Pageable<PersistentThreadMessage>? chatHistory;
     private string threadId => FoundryProvider.ThreadId!;
 
     private string? userInput;
+    private string? newAgentName;
+    private string? agentStatus;
     private PersistentAgent agent => FoundryProvider.Agent!;
 
     private PersistentAgentsClient client => FoundryProvider.Client!;
+
+    // Example method demonstrating how to use the enhanced agent service
+    private async Task CreateOrGetAgentAsync()
+    {
+        if (string.IsNullOrWhiteSpace(newAgentName))
+        {
+            agentStatus = "Please enter an agent name.";
+            StateHasChanged();
+            return;
+        }
+
+        isCreatingAgent = true;
+        agentStatus = "Looking for existing agent or creating new one...";
+        StateHasChanged();
+
+        try
+        {
+            var agent = await FoundryProvider.GetOrCreateAgentAsync(
+                newAgentName, 
+                "You are a helpful assistant created dynamically by name.");
+
+            if (agent != null)
+            {
+                agentStatus = $"✅ Agent '{newAgentName}' is ready! ID: {agent.Id}";
+            }
+            else
+            {
+                agentStatus = $"❌ Failed to create or retrieve agent '{newAgentName}'. Check your configuration.";
+            }
+        }
+        catch (Exception ex)
+        {
+            agentStatus = $"❌ Error: {ex.Message}";
+        }
+        finally
+        {
+            isCreatingAgent = false;
+            StateHasChanged();
+        }
+    }
 
     // Given the injected client, agent, and thread ID, this code shows the standard pattern of:
     // 1. Add the user prompt to the thread

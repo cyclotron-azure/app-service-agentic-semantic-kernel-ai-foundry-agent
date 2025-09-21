@@ -1,8 +1,6 @@
 using Microsoft.SemanticKernel;
 using CRUDTasksWithAgent.Models;
 using CRUDTasksWithAgent.Services;
-using Microsoft.EntityFrameworkCore;
-using System.Text;
 using System.ComponentModel;
 
 namespace CRUDTasksWithAgent.Plugins

@@ -1,5 +1,4 @@
 using Microsoft.SemanticKernel.Agents;
-using Microsoft.Extensions.Configuration;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.Connectors.AzureOpenAI;
 using Azure.Identity;
