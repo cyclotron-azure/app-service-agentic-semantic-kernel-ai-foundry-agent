@@ -19,6 +19,7 @@ namespace CRUDTasksWithAgent.Services
         public string? ThreadId { get; } // The agent thread ID
         Task<PersistentAgent?> GetOrCreateAgentAsync(string agentName, string? instructions = null);
         Task<PersistentAgent?> GetAgentByNameAsync(string agentName);
+        Task<List<PersistentAgent>> GetAllAgentsAsync();
     }
 
     public class FoundryAgentProvider : IFoundryAgentProvider
@@ -151,6 +152,35 @@ namespace CRUDTasksWithAgent.Services
             {
                 _logger.LogError(ex, "Error querying agent by name: {AgentName}", agentName);
                 return Task.FromResult<PersistentAgent?>(null);
+            }
+        }
+
+        public Task<List<PersistentAgent>> GetAllAgentsAsync()
+        {
+            if (!IsConfigured || Client == null)
+            {
+                _logger.LogError("FoundryAgentProvider is not configured");
+                return Task.FromResult(new List<PersistentAgent>());
+            }
+
+            try
+            {
+                // Get all agents and convert to list
+                var agents = Client.Administration.GetAgents();
+                var agentList = new List<PersistentAgent>();
+                
+                foreach (var agent in agents)
+                {
+                    agentList.Add(agent);
+                }
+
+                _logger.LogInformation("Retrieved {Count} agents from Azure AI Foundry", agentList.Count);
+                return Task.FromResult(agentList);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving all agents");
+                return Task.FromResult(new List<PersistentAgent>());
             }
         }
     }

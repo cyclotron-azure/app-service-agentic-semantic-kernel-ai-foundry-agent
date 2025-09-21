@@ -4,6 +4,7 @@
 @using CRUDTasksWithAgent.Models
 @using Microsoft.Net.Http.Headers
 @using Azure
+@using System.Linq
 @inject CRUDTasksWithAgent.Services.IFoundryAgentProvider FoundryProvider
 @inject IJSRuntime JSRuntime
 @inject IConfiguration Configuration
@@ -27,20 +28,88 @@ else
                 <h5>Agent Management</h5>
             </div>
             <div class="card-body">
-                <div class="row">
-                    <div class="col-md-8">
-                        <InputText @bind-Value="newAgentName" class="form-control" placeholder="Enter agent name" />
+                <div class="row mb-3">
+                    <div class="col-md-12">
+                        <div class="btn-group w-100" role="group" aria-label="Agent mode selection">
+                            <input type="radio" class="btn-check" name="agentMode" id="selectExisting" @onchange="() => SetAgentMode(false)" checked="@(!isCreatingNewAgent)">
+                            <label class="btn btn-outline-primary" for="selectExisting">Select Existing Agent</label>
+                            
+                            <input type="radio" class="btn-check" name="agentMode" id="createNew" @onchange="() => SetAgentMode(true)" checked="@isCreatingNewAgent">
+                            <label class="btn btn-outline-primary" for="createNew">Create New Agent</label>
+                        </div>
                     </div>
-                    <div class="col-md-4">
-                        <button type="button" @onclick="CreateOrGetAgentAsync" class="btn btn-success" disabled="@isCreatingAgent">
+                </div>
+
+                @if (!isCreatingNewAgent)
+                {
+                    <!-- Existing Agent Selection -->
+                    <div class="row mb-3">
+                        <div class="col-md-10">
+                            <label for="existingAgents" class="form-label">Select Existing Agent</label>
+                            <select id="existingAgents" @bind="selectedAgentId" class="form-select" disabled="@isLoadingAgents">
+                                <option value="">@(isLoadingAgents ? "Loading agents..." : "-- Select an Agent --")</option>
+                                @if (availableAgents != null)
+                                {
+                                    @foreach (var agent in availableAgents)
+                                    {
+                                        <option value="@agent.Id">@agent.Name (@agent.Id)</option>
+                                    }
+                                }
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">&nbsp;</label>
+                            <button type="button" @onclick="RefreshAgentsAsync" class="btn btn-outline-secondary d-block w-100" disabled="@isLoadingAgents">
+                                @if (isLoadingAgents)
+                                {
+                                    <span class="spinner-border spinner-border-sm" role="status"></span>
+                                }
+                                else
+                                {
+                                    <text>Refresh</text>
+                                }
+                            </button>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <!-- New Agent Creation -->
+                    <div class="row mb-3">
+                        <div class="col-md-12">
+                            <label for="agentName" class="form-label">Agent Name</label>
+                            <InputText id="agentName" @bind-Value="newAgentName" class="form-control" placeholder="Enter agent name (e.g., CustomerSupportAgent)" />
+                        </div>
+                    </div>
+                }
+                <div class="row mb-3">
+                    <div class="col-md-12">
+                        <label for="agentPrompt" class="form-label">Agent Instructions (for new agents)</label>
+                        <InputTextArea id="agentPrompt" @bind-Value="newAgentPrompt" class="form-control" rows="3" 
+                                     placeholder="Enter custom instructions for the agent (e.g., You are a helpful customer support agent specializing in product returns and exchanges...)" />
+                        <div class="form-text">These instructions will only be used when creating a new agent. Existing agents will retain their current instructions.</div>
+                        <div class="mt-2">
+                            <small class="text-muted">Quick examples:</small>
+                            <div class="btn-group-sm mt-1" role="group">
+                                <button type="button" class="btn btn-outline-secondary btn-sm me-1" @onclick='() => SetExamplePrompt("customer-support")'>Customer Support</button>
+                                <button type="button" class="btn btn-outline-secondary btn-sm me-1" @onclick='() => SetExamplePrompt("code-reviewer")'>Code Reviewer</button>
+                                <button type="button" class="btn btn-outline-secondary btn-sm me-1" @onclick='() => SetExamplePrompt("technical-writer")'>Technical Writer</button>
+                                <button type="button" class="btn btn-outline-danger btn-sm" @onclick="ClearPrompt">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-12">
+                        <button type="button" @onclick="CreateOrGetAgentAsync" class="btn btn-success" disabled="@(isCreatingAgent || (!isCreatingNewAgent && string.IsNullOrEmpty(selectedAgentId)) || (isCreatingNewAgent && string.IsNullOrWhiteSpace(newAgentName)))">
                             @if (isCreatingAgent)
                             {
                                 <span class="spinner-border spinner-border-sm" role="status"></span>
-                                <text>Creating...</text>
+                                <text>@(isCreatingNewAgent ? "Creating..." : "Loading...")</text>
                             }
                             else
                             {
-                                <text>Get/Create Agent</text>
+                                <text>@(isCreatingNewAgent ? "Create Agent" : "Use Selected Agent")</text>
                             }
                         </button>
                     </div>
@@ -59,7 +128,7 @@ else
     <div class="container-fluid d-flex flex-column align-items-center justify-content-center" style="height: 100vh;">
         <div class="card shadow w-100" style="max-width: 600px; height: 80vh; min-height: 400px; display: flex; flex-direction: column;">
             <div class="card-header bg-primary text-white">
-                <h3 class="mb-0">Azure AI Foundry Agent</h3>
+                <h3 class="mb-0">Azure AI Foundry Agent @(agent != null ? $"- {agent.Name}" : "- No Agent Selected")</h3>
             </div>
             <div class="card-body flex-grow-1 overflow-auto" id="chatMessages" style="min-height: 0;">
                 @{
@@ -99,8 +168,10 @@ else
             <div class="card-footer bg-light">
                 <EditForm Model="this" OnValidSubmit="SendMessageAsync" FormName="chatForm">
                     <div class="input-group">
-                        <InputText @bind-Value="userInput" @onkeypress="HandleKeyPress" class="form-control" placeholder="Type your message..." disabled="@isLoading" />
-                        <button type="submit" class="btn btn-primary" disabled="@isLoading">Send</button>
+                        <InputText @bind-Value="userInput" @onkeypress="HandleKeyPress" class="form-control" 
+                                   placeholder="@(agent != null ? "Type your message..." : "Please select or create an agent first...")" 
+                                   disabled="@(isLoading || agent == null)" />
+                        <button type="submit" class="btn btn-primary" disabled="@(isLoading || agent == null)">Send</button>
                     </div>
                 </EditForm>
             </div>
@@ -117,38 +188,94 @@ else
 
     private string? userInput;
     private string? newAgentName;
+    private string? newAgentPrompt;
     private string? agentStatus;
-    private PersistentAgent agent => FoundryProvider.Agent!;
+    private string? selectedAgentId;
+    private bool isCreatingNewAgent = true;
+    private bool isLoadingAgents = false;
+    private List<PersistentAgent>? availableAgents;
+    private PersistentAgent? currentAgent;
+    private PersistentAgent agent => currentAgent ?? FoundryProvider.Agent!;
 
     private PersistentAgentsClient client => FoundryProvider.Client!;
 
-    // Example method demonstrating how to use the enhanced agent service
+    // Handle both creating new agents and selecting existing ones
     private async Task CreateOrGetAgentAsync()
     {
-        if (string.IsNullOrWhiteSpace(newAgentName))
-        {
-            agentStatus = "Please enter an agent name.";
-            StateHasChanged();
-            return;
-        }
-
         isCreatingAgent = true;
-        agentStatus = "Looking for existing agent or creating new one...";
         StateHasChanged();
 
         try
         {
-            var agent = await FoundryProvider.GetOrCreateAgentAsync(
-                newAgentName, 
-                "You are a helpful assistant created dynamically by name.");
-
-            if (agent != null)
+            if (isCreatingNewAgent)
             {
-                agentStatus = $"✅ Agent '{newAgentName}' is ready! ID: {agent.Id}";
+                // Creating a new agent
+                if (string.IsNullOrWhiteSpace(newAgentName))
+                {
+                    agentStatus = "Please enter an agent name.";
+                    return;
+                }
+
+                agentStatus = "Creating new agent...";
+                StateHasChanged();
+
+                // Check if agent already exists first
+                var existingAgent = await FoundryProvider.GetAgentByNameAsync(newAgentName);
+                bool isNewAgent = existingAgent == null;
+
+                // Use custom prompt if provided, otherwise use default
+                var instructions = !string.IsNullOrWhiteSpace(newAgentPrompt) 
+                    ? newAgentPrompt 
+                    : "You are a helpful assistant created dynamically by name.";
+
+                var agent = await FoundryProvider.GetOrCreateAgentAsync(
+                    newAgentName, 
+                    instructions);
+
+                if (agent != null)
+                {
+                    currentAgent = agent; // Set the active agent
+                    if (isNewAgent)
+                    {
+                        agentStatus = $"🆕 Created new agent '{newAgentName}'! ID: {agent.Id}";
+                        if (!string.IsNullOrWhiteSpace(newAgentPrompt))
+                        {
+                            agentStatus += $"\n📝 Instructions: {newAgentPrompt.Substring(0, Math.Min(100, newAgentPrompt.Length))}...";
+                        }
+                    }
+                    else
+                    {
+                        agentStatus = $"🔍 Found existing agent '{newAgentName}'! ID: {agent.Id}";
+                        agentStatus += "\n⚠️ Note: Existing agents keep their original instructions.";
+                    }
+                }
+                else
+                {
+                    agentStatus = $"❌ Failed to create or retrieve agent '{newAgentName}'. Check your configuration.";
+                }
             }
             else
             {
-                agentStatus = $"❌ Failed to create or retrieve agent '{newAgentName}'. Check your configuration.";
+                // Using existing agent
+                if (string.IsNullOrEmpty(selectedAgentId))
+                {
+                    agentStatus = "Please select an agent from the dropdown.";
+                    return;
+                }
+
+                agentStatus = "Loading selected agent...";
+                StateHasChanged();
+
+                var selectedAgent = availableAgents?.FirstOrDefault(a => a.Id == selectedAgentId);
+                if (selectedAgent != null)
+                {
+                    currentAgent = selectedAgent; // Set the active agent
+                    agentStatus = $"✅ Using existing agent '{selectedAgent.Name}'! ID: {selectedAgent.Id}";
+                }
+                else
+                {
+                    agentStatus = $"❌ Could not find selected agent. Try refreshing the agent list.";
+                }
             }
         }
         catch (Exception ex)
@@ -162,6 +289,75 @@ else
         }
     }
 
+    // Set example prompts for common agent types
+    private void SetExamplePrompt(string promptType)
+    {
+        newAgentPrompt = promptType switch
+        {
+            "customer-support" => "You are a helpful customer support agent specializing in product inquiries, returns, exchanges, and troubleshooting. Always be polite, professional, and provide clear step-by-step assistance.",
+            "code-reviewer" => "You are an experienced code reviewer specializing in software development best practices. Review code for bugs, performance issues, security vulnerabilities, and maintainability. Provide constructive feedback and suggestions for improvement.",
+            "technical-writer" => "You are a skilled technical writer who creates clear, concise, and user-friendly documentation. Help users understand complex technical concepts by breaking them down into simple, actionable steps.",
+            _ => "You are a helpful assistant."
+        };
+        StateHasChanged();
+    }
+
+    // Clear the agent prompt field
+    private void ClearPrompt()
+    {
+        newAgentPrompt = string.Empty;
+        StateHasChanged();
+    }
+
+    // Set the mode between creating new agent or selecting existing
+    private async void SetAgentMode(bool createNew)
+    {
+        isCreatingNewAgent = createNew;
+        if (!createNew && availableAgents == null)
+        {
+            await RefreshAgentsAsync();
+        }
+        StateHasChanged();
+    }
+
+    // Refresh the list of available agents
+    private async Task RefreshAgentsAsync()
+    {
+        if (!FoundryProvider.IsConfigured)
+        {
+            return;
+        }
+
+        isLoadingAgents = true;
+        StateHasChanged();
+
+        try
+        {
+            availableAgents = await FoundryProvider.GetAllAgentsAsync();
+            agentStatus = $"Loaded {availableAgents?.Count ?? 0} existing agents.";
+        }
+        catch (Exception ex)
+        {
+            agentStatus = $"❌ Error loading agents: {ex.Message}";
+            availableAgents = new List<PersistentAgent>();
+        }
+        finally
+        {
+            isLoadingAgents = false;
+            StateHasChanged();
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (FoundryProvider.IsConfigured)
+        {
+            // Set the current agent if one is already configured
+            currentAgent = FoundryProvider.Agent;
+            await RefreshAgentsAsync();
+        }
+    }
+
     // Given the injected client, agent, and thread ID, this code shows the standard pattern of:
     // 1. Add the user prompt to the thread
     // 2. Create a run to process the user prompt in a run
@@ -171,6 +367,13 @@ else
     {
         if (string.IsNullOrWhiteSpace(userInput))
         {
+            return;
+        }
+
+        if (agent == null)
+        {
+            agentStatus = "❌ No agent selected. Please create or select an agent first.";
+            StateHasChanged();
             return;
         }
 
