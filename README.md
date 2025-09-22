@@ -24,3 +24,8 @@ See [Tutorial: Build an agentic web app in Azure App Service with Semantic Kerne
 - `Services/` — Service classes for task management and agent providers.
 - `Plugins/` — Example plugin for task CRUD operations.
 - `infra/` — Bicep and parameter files for Azure deployment.
+
+
+## References
+
+[Azure AI Agents function calling](https://learn.microsoft.com/en-us/azure/ai-foundry/agents/how-to/tools/function-calling?pivots=csharp)
