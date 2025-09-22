@@ -1,5 +1,10 @@
 using Azure.AI.Agents.Persistent;
 using Azure.Identity;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using CRUDTasksWithAgent.Services;
+using System.Text.Json;
+using System.Linq;
 
 namespace CRUDTasksWithAgent.Services
 {
@@ -20,22 +25,25 @@ namespace CRUDTasksWithAgent.Services
         Task<PersistentAgent?> GetOrCreateAgentAsync(string agentName, string? instructions = null);
         Task<PersistentAgent?> GetAgentByNameAsync(string agentName);
         Task<List<PersistentAgent>> GetAllAgentsAsync();
+        Task<string> HandleFunctionCallAsync(string functionName, string arguments);
     }
 
     public class FoundryAgentProvider : IFoundryAgentProvider
     {
         private readonly ILogger<FoundryAgentProvider> _logger;
         private readonly IConfiguration _config;
+        private readonly TaskService _taskService;
         
         public bool IsConfigured { get; }
         public PersistentAgentsClient? Client { get; }
         public string? ThreadId { get; }
         public PersistentAgent? Agent { get; private set; }
 
-        public FoundryAgentProvider(IConfiguration config, ILogger<FoundryAgentProvider> logger)
+        public FoundryAgentProvider(IConfiguration config, ILogger<FoundryAgentProvider> logger, TaskService taskService)
         {
             _logger = logger;
             _config = config;
+            _taskService = taskService;
             IsConfigured = false;
 
             // Create a new client instance
@@ -104,13 +112,15 @@ namespace CRUDTasksWithAgent.Services
                     return null;
                 }
 
-                var agentInstructions = instructions ?? "You are a helpful assistant.";
+                var agentInstructions = instructions ?? "You are a helpful assistant that can manage tasks. You have access to task management functions to create, read, update, and delete tasks.";
+                var tools = CreateTaskServiceTools();
                 
-                _logger.LogInformation("Creating new agent: {AgentName}", agentName);
+                _logger.LogInformation("Creating new agent: {AgentName} with {ToolCount} tools", agentName, tools.Count);
                 var newAgent = Client.Administration.CreateAgent(
                     model: modelDeployment,
                     name: agentName,
-                    instructions: agentInstructions);
+                    instructions: agentInstructions,
+                    tools: tools);
 
                 _logger.LogInformation("Created agent {AgentName} with ID: {AgentId}", agentName, newAgent.Value.Id);
                 Agent = newAgent.Value;
@@ -183,5 +193,187 @@ namespace CRUDTasksWithAgent.Services
                 return Task.FromResult(new List<PersistentAgent>());
             }
         }
+
+        private List<ToolDefinition> CreateTaskServiceTools()
+        {
+            var tools = new List<ToolDefinition>();
+
+            // Create Task Function
+            var createTaskTool = new FunctionToolDefinition(
+                name: "create_task",
+                description: "Creates a new task with a title and optional completion status",
+                parameters: BinaryData.FromObjectAsJson(new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        title = new { type = "string", description = "Title of the task" },
+                        isComplete = new { type = "boolean", description = "Whether the task is complete", @default = false }
+                    },
+                    required = new[] { "title" }
+                }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+
+            // Read Tasks Function
+            var readTasksTool = new FunctionToolDefinition(
+                name: "read_tasks",
+                description: "Reads all tasks, or a single task if an id is provided",
+                parameters: BinaryData.FromObjectAsJson(new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        id = new { type = "string", description = "Id of the task to read (optional)" }
+                    },
+                    required = new string[0]
+                }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+
+            // Update Task Function
+            var updateTaskTool = new FunctionToolDefinition(
+                name: "update_task",
+                description: "Updates the specified task fields by id",
+                parameters: BinaryData.FromObjectAsJson(new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        id = new { type = "string", description = "Id of the task to update" },
+                        title = new { type = "string", description = "New title (optional)" },
+                        isComplete = new { type = "boolean", description = "New completion status (optional)" }
+                    },
+                    required = new[] { "id" }
+                }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+
+            // Delete Task Function
+            var deleteTaskTool = new FunctionToolDefinition(
+                name: "delete_task",
+                description: "Deletes a task by id",
+                parameters: BinaryData.FromObjectAsJson(new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        id = new { type = "string", description = "Id of the task to delete" }
+                    },
+                    required = new[] { "id" }
+                }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+
+            tools.Add(createTaskTool);
+            tools.Add(readTasksTool);
+            tools.Add(updateTaskTool);
+            tools.Add(deleteTaskTool);
+
+            return tools;
+        }
+
+        public async Task<string> HandleFunctionCallAsync(string functionName, string arguments)
+        {
+            try
+            {
+                var parsedArgs = JsonDocument.Parse(arguments);
+                var args = parsedArgs.RootElement;
+
+                return functionName switch
+                {
+                    "create_task" => await HandleCreateTaskAsync(args),
+                    "read_tasks" => await HandleReadTasksAsync(args),
+                    "update_task" => await HandleUpdateTaskAsync(args),
+                    "delete_task" => await HandleDeleteTaskAsync(args),
+                    _ => $"Unknown function: {functionName}"
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error handling function call: {FunctionName}", functionName);
+                return $"Error executing function {functionName}: {ex.Message}";
+            }
+        }
+
+        private async Task<string> HandleCreateTaskAsync(JsonElement args)
+        {
+            var title = args.TryGetProperty("title", out var titleElement) ? titleElement.GetString() : "";
+            var isComplete = args.TryGetProperty("isComplete", out var completeElement) ? completeElement.GetBoolean() : false;
+
+            if (string.IsNullOrWhiteSpace(title))
+                return "Error: Task title is required";
+
+            var task = await _taskService.AddTaskAsync(title);
+            if (isComplete)
+            {
+                await _taskService.SetTaskCompletionAsync(task, true);
+            }
+
+            return $"Task created successfully: ID {task.Id}, Title '{task.Title}', Complete: {task.IsComplete}";
+        }
+
+        private async Task<string> HandleReadTasksAsync(JsonElement args)
+        {
+            if (args.TryGetProperty("id", out var idElement) && 
+                !string.IsNullOrWhiteSpace(idElement.GetString()) &&
+                int.TryParse(idElement.GetString(), out var taskId))
+            {
+                var task = await _taskService.GetTaskByIdAsync(taskId);
+                if (task == null)
+                    return $"Task with ID {taskId} not found";
+                
+                return FormatTask(task);
+            }
+
+            var tasks = await _taskService.GetAllTasksAsync();
+            if (!tasks.Any())
+                return "No tasks found";
+
+            return string.Join("\n\n", tasks.Select(FormatTask));
+        }
+
+        private async Task<string> HandleUpdateTaskAsync(JsonElement args)
+        {
+            if (!args.TryGetProperty("id", out var idElement) || 
+                !int.TryParse(idElement.GetString(), out var taskId))
+                return "Error: Valid task ID is required";
+
+            var task = await _taskService.GetTaskByIdAsync(taskId);
+            if (task == null)
+                return $"Task with ID {taskId} not found";
+
+            var updated = false;
+
+            if (args.TryGetProperty("title", out var titleElement) && 
+                !string.IsNullOrWhiteSpace(titleElement.GetString()))
+            {
+                task.Title = titleElement.GetString()!;
+                updated = true;
+            }
+
+            if (args.TryGetProperty("isComplete", out var completeElement))
+            {
+                task.IsComplete = completeElement.GetBoolean();
+                updated = true;
+            }
+
+            if (updated)
+            {
+                await _taskService.UpdateTaskAsync(task);
+                return $"Task {taskId} updated successfully: {FormatTask(task)}";
+            }
+
+            return "No updates provided";
+        }
+
+        private async Task<string> HandleDeleteTaskAsync(JsonElement args)
+        {
+            if (!args.TryGetProperty("id", out var idElement) || 
+                !int.TryParse(idElement.GetString(), out var taskId))
+                return "Error: Valid task ID is required";
+
+            var task = await _taskService.GetTaskByIdAsync(taskId);
+            if (task == null)
+                return $"Task with ID {taskId} not found";
+
+            await _taskService.DeleteTaskAsync(task);
+            return $"Task {taskId} '{task.Title}' deleted successfully";
+        }
+
+        private static string FormatTask(Models.TaskItem task) =>
+            $"ID: {task.Id}\nTitle: {task.Title}\nComplete: {(task.IsComplete ? "Yes" : "No")}";
     }
 }

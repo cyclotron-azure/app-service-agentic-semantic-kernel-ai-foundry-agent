@@ -91,9 +91,7 @@ else
                         <div class="mt-2">
                             <small class="text-muted">Quick examples:</small>
                             <div class="btn-group-sm mt-1" role="group">
-                                <button type="button" class="btn btn-outline-secondary btn-sm me-1" @onclick='() => SetExamplePrompt("customer-support")'>Customer Support</button>
-                                <button type="button" class="btn btn-outline-secondary btn-sm me-1" @onclick='() => SetExamplePrompt("code-reviewer")'>Code Reviewer</button>
-                                <button type="button" class="btn btn-outline-secondary btn-sm me-1" @onclick='() => SetExamplePrompt("technical-writer")'>Technical Writer</button>
+                                <button type="button" class="btn btn-outline-primary btn-sm me-1" @onclick='() => SetExamplePrompt("task-manager")'>Task Manager</button>
                                 <button type="button" class="btn btn-outline-danger btn-sm" @onclick="ClearPrompt">Clear</button>
                             </div>
                         </div>
@@ -294,10 +292,8 @@ else
     {
         newAgentPrompt = promptType switch
         {
-            "customer-support" => "You are a helpful customer support agent specializing in product inquiries, returns, exchanges, and troubleshooting. Always be polite, professional, and provide clear step-by-step assistance.",
-            "code-reviewer" => "You are an experienced code reviewer specializing in software development best practices. Review code for bugs, performance issues, security vulnerabilities, and maintainability. Provide constructive feedback and suggestions for improvement.",
-            "technical-writer" => "You are a skilled technical writer who creates clear, concise, and user-friendly documentation. Help users understand complex technical concepts by breaking them down into simple, actionable steps.",
-            _ => "You are a helpful assistant."
+            "task-manager" => "You are a dedicated task management assistant. You help users organize their work by creating, updating, tracking, and managing tasks efficiently. You can create tasks, mark them as complete, update task details, and provide status reports on all tasks.",
+            _ => "You are a helpful assistant with task management capabilities. You can help users create, read, update, and delete tasks to stay organized and productive."
         };
         StateHasChanged();
     }
@@ -399,11 +395,40 @@ else
             threadId,
             agent.Id);
 
-        //Poll for completion.
+        // Poll for completion and handle function calls
         do
         {
             await Task.Delay(TimeSpan.FromMilliseconds(500));
             run = await client.Runs.GetRunAsync(threadId, run.Id);
+            
+            // Handle function calls when the run requires action
+            if (run.Status == RunStatus.RequiresAction 
+                && run.RequiredAction is SubmitToolOutputsAction submitToolOutputsAction)
+            {
+                agentStatus = "Processing function calls...";
+                StateHasChanged();
+
+                var toolOutputs = new List<ToolOutput>();
+
+                // Process each tool call
+                foreach (var toolCall in submitToolOutputsAction.ToolCalls)
+                {
+                    if (toolCall is RequiredFunctionToolCall functionCall)
+                    {
+                        var functionResult = await FoundryProvider.HandleFunctionCallAsync(
+                            functionCall.Name,
+                            functionCall.Arguments);
+
+                        toolOutputs.Add(new ToolOutput(toolCall.Id, functionResult));
+                    }
+                }
+
+                // Submit the tool outputs back to the run
+                if (toolOutputs.Any())
+                {
+                    run = await client.Runs.SubmitToolOutputsToRunAsync(run, toolOutputs);
+                }
+            }
         }
         while (run.Status == RunStatus.Queued
             || run.Status == RunStatus.InProgress
